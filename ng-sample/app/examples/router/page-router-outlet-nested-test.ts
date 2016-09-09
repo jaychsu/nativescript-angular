@@ -85,6 +85,8 @@ class DetailComponent {
     <StackLayout>
         <Label [text]="'Second component: ' + (depth$ | async)" class="title"></Label>
 
+        <Button class="link" text="Nav to First" [nsRouterLink]="['/']"></Button>
+
         <StackLayout class="nav">
             <Button class="link" text="< BACK" (tap)="goBack()"></Button>
             <Button class="link" [text]="'Second ' + (nextDepth$ | async) + ' >'" [nsRouterLink]="['/second', (nextDepth$ | async)]"></Button>
@@ -123,25 +125,27 @@ class SecondComponent implements OnInit, OnDestroy {
     template: `<page-router-outlet></page-router-outlet>`
 })
 export class PageRouterOutletNestedAppComponent {
+    static routes: RouterConfig = [
+        { path: "", component: FirstComponent },
+        {
+            path: "second/:depth", component: SecondComponent,
+            children: [
+                { path: "", component: MasterComponent },
+                { path: "detail/:id", component: DetailComponent }
+            ]
+        },
+    ];
+
+    static entries = [
+        FirstComponent,
+        SecondComponent,
+        MasterComponent,
+        DetailComponent
+    ]
+
     constructor(router: Router, private location: Location) {
         router.events.subscribe((e) => {
             console.log("--EVENT-->: " + e.toString());
         })
     }
 }
-
-
-const routes: RouterConfig = [
-    { path: "", component: FirstComponent },
-    {
-        path: "second/:depth", component: SecondComponent,
-        children: [
-            { path: "", component: MasterComponent },
-            { path: "detail/:id", component: DetailComponent }
-        ]
-    },
-];
-
-export const PageRouterOutletNestedRouterProviders = [
-    nsProvideRouter(routes, { enableTracing: false })
-];

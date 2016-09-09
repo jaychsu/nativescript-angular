@@ -1,6 +1,6 @@
 import { Component, OnInit, OnDestroy } from "@angular/core";
 import { RouterConfig, ActivatedRoute, ROUTER_DIRECTIVES } from '@angular/router';
-import { NS_ROUTER_DIRECTIVES, nsProvideRouter} from "nativescript-angular/router"
+import { NS_ROUTER_DIRECTIVES, nsProvideRouter} from "nativescript-angular/router";
 
 @Component({
     selector: "first",
@@ -14,7 +14,7 @@ class FirstComponent implements OnInit, OnDestroy {
     ngOnInit() {
         console.log("FirstComponent - ngOnInit()");
     }
-    
+
     ngOnDestroy() {
         console.log("FirstComponent - ngOnDestroy()");
     }
@@ -50,9 +50,9 @@ class SecondComponent implements OnInit, OnDestroy {
     template: `
         <StackLayout>
             <StackLayout class="nav">
-                <Button text="First" nsRouterLink="/"></Button>
-                <Button text="Second(1)" nsRouterLink="/second/1"></Button>           <!-- Both work -->
-                <Button text="Second(2)" [nsRouterLink]="['/second', '2' ]"></Button> <!-- Both work -->
+                <Button text="First" nsRouterLinkActive="active" nsRouterLink="/first"></Button>
+                <Button text="Second(1)" nsRouterLinkActive="active" nsRouterLink="/second/1"></Button>           <!-- Both work -->
+                <Button text="Second(2)" nsRouterLinkActive="active" [nsRouterLink]="['/second', '2' ]"></Button> <!-- Both work -->
             </StackLayout>
             
             <router-outlet></router-outlet>
@@ -60,14 +60,11 @@ class SecondComponent implements OnInit, OnDestroy {
     `
 })
 export class RouterOutletAppComponent {
+    static routes: RouterConfig = [
+        { path: "", redirectTo: "/first", terminal: true },
+        { path: "first", component: FirstComponent },
+        { path: "second/:id", component: SecondComponent },
+    ];
 }
 
 
-const routes: RouterConfig = [
-    { path: "", component: FirstComponent},
-    { path: "second/:id", component: SecondComponent },
-];
-
-export const RouterOutletRouterProviders = [
-    nsProvideRouter(routes, { enableTracing: false })
-];

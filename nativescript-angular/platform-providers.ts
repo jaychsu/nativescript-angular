@@ -1,7 +1,9 @@
-import {topmost} from 'ui/frame';
+import {topmost, Frame} from 'ui/frame';
 import {Page} from 'ui/page';
 import {provide, Provider, OpaqueToken} from '@angular/core/src/di';
-import {Device, ScreenMetrics, device, screen} from "platform";
+import {device} from "platform";
+import {NativeScriptAnimationDriver} from './animation-driver';
+import { AnimationDriver } from '@angular/platform-browser/src/dom/animation_driver';
 
 export const APP_ROOT_VIEW = new OpaqueToken('App Root View');
 export const DEVICE = new OpaqueToken('platfrom device');
@@ -17,5 +19,8 @@ export function getDefaultPage(): Page {
     }
 }
 
+export const defaultFrameProvider = provide(Frame, { useFactory: topmost });
+
 export const defaultDeviceProvider = provide(DEVICE, { useValue: device });
 
+export const defaultAnimationDriverProvider = provide(AnimationDriver, { useClass: NativeScriptAnimationDriver });

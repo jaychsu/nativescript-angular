@@ -1,24 +1,35 @@
 import {
     Attribute, ComponentFactory, ComponentRef, Directive,
     ReflectiveInjector, ResolvedReflectiveProvider, ViewContainerRef,
-    Inject, ComponentResolver, provide} from '@angular/core';
+    Inject, ComponentResolver, provide, ComponentFactoryResolver,
+    NoComponentFactoryError, Injector
+} from '@angular/core';
 
-import {isBlank, isPresent} from '@angular/core/src/facade/lang';
+import {isPresent} from '@angular/core/src/facade/lang';
 
 import {RouterOutletMap, ActivatedRoute, PRIMARY_OUTLET} from '@angular/router';
-import {RouterOutlet} from '@angular/router/directives/router_outlet';
 import {NSLocationStrategy} from "./ns-location-strategy";
 import {DEVICE} from "../platform-providers";
 import {Device} from "platform";
 import {routerLog} from "../trace";
 import {DetachedLoader} from "../common/detached-loader";
 import {ViewUtil} from "../view-util";
-import {topmost} from "ui/frame";
+import {Frame} from "ui/frame";
 import {Page, NavigatedData} from "ui/page";
+import {BehaviorSubject} from "rxjs";
 
 interface CacheItem {
     componentRef: ComponentRef<any>;
+    reusedRoute: PageRoute;
+    outletMap: RouterOutletMap;
     loaderRef?: ComponentRef<any>;
+}
+
+export class PageRoute {
+    activatedRoute: BehaviorSubject<ActivatedRoute>;
+    constructor(startRoute: ActivatedRoute) {
+        this.activatedRoute = new BehaviorSubject(startRoute);
+    }
 }
 
 /**
@@ -27,8 +38,12 @@ interface CacheItem {
 class RefCache {
     private cache: Array<CacheItem> = new Array<CacheItem>();
 
-    public push(comp: ComponentRef<any>, loaderRef?: ComponentRef<any>) {
-        this.cache.push({ componentRef: comp, loaderRef: loaderRef });
+    public push(
+        componentRef: ComponentRef<any>,
+        reusedRoute: PageRoute,
+        outletMap: RouterOutletMap,
+        loaderRef: ComponentRef<any>) {
+        this.cache.push({ componentRef, reusedRoute, outletMap, loaderRef });
     }
 
     public pop(): CacheItem {
@@ -38,33 +53,37 @@ class RefCache {
     public peek(): CacheItem {
         return this.cache[this.cache.length - 1];
     }
+
+    public get length(): number {
+        return this.cache.length;
+    }
 }
 
-
-
 @Directive({ selector: 'page-router-outlet' })
-export class PageRouterOutlet extends RouterOutlet {
+export class PageRouterOutlet {
     private viewUtil: ViewUtil;
     private refCache: RefCache = new RefCache();
     private isInitalPage: boolean = true;
     private detachedLoaderFactory: ComponentFactory<DetachedLoader>;
 
-    private currnetActivatedComp: ComponentRef<any>;
+    private currentActivatedComp: ComponentRef<any>;
     private currentActivatedRoute: ActivatedRoute;
 
+    public outletMap: RouterOutletMap;
+
     get isActivated(): boolean {
-        return !!this.currnetActivatedComp;
+        return !!this.currentActivatedComp;
     }
 
     get component(): Object {
-        if (!this.currnetActivatedComp) {
+        if (!this.currentActivatedComp) {
             throw new Error('Outlet is not activated');
         }
 
-        return this.currnetActivatedComp.instance;
+        return this.currentActivatedComp.instance;
     }
     get activatedRoute(): ActivatedRoute {
-        if (!this.currnetActivatedComp) {
+        if (!this.currentActivatedComp) {
             throw new Error('Outlet is not activated');
         }
 
@@ -76,37 +95,50 @@ export class PageRouterOutlet extends RouterOutlet {
         private containerRef: ViewContainerRef,
         @Attribute('name') name: string,
         private locationStrategy: NSLocationStrategy,
+        private componentFactoryResolver: ComponentFactoryResolver,
         compiler: ComponentResolver,
+        private frame: Frame,
         @Inject(DEVICE) device: Device) {
-        super(parentOutletMap, containerRef, name)
+
+        parentOutletMap.registerOutlet(name ? name : PRIMARY_OUTLET, <any>this);
 
         this.viewUtil = new ViewUtil(device);
         compiler.resolveComponent(DetachedLoader).then((detachedLoaderFactory) => {
-            log("DetachedLoaderFactory leaded");
+            log("DetachedLoaderFactory loaded");
             this.detachedLoaderFactory = detachedLoaderFactory;
-        })
+        });
     }
 
     deactivate(): void {
-        if (this.locationStrategy.isPageNavigatingBack()) {
+        if (this.locationStrategy._isPageNavigatingBack()) {
             log("PageRouterOutlet.deactivate() while going back - should destroy");
             const popedItem = this.refCache.pop();
             const popedRef = popedItem.componentRef;
 
-            if (this.currnetActivatedComp !== popedRef) {
+            if (this.currentActivatedComp !== popedRef) {
                 throw new Error("Current componentRef is different for cached componentRef");
             }
 
-            if (isPresent(this.currnetActivatedComp)) {
-                this.currnetActivatedComp.destroy();
-                this.currnetActivatedComp = null;
-            }
+            this.destroyCacheItem(popedItem);
+            this.currentActivatedComp = null;
 
-            if (isPresent(popedItem.loaderRef)) {
-                popedItem.loaderRef.destroy();
-            }
         } else {
             log("PageRouterOutlet.deactivate() while going foward - do nothing");
+        }
+    }
+
+    private clearRefCache() {
+        while (this.refCache.length > 0) {
+            this.destroyCacheItem(this.refCache.pop());
+        }
+    }
+    private destroyCacheItem(popedItem: CacheItem) {
+        if (isPresent(popedItem.componentRef)) {
+            popedItem.componentRef.destroy();
+        }
+
+        if (isPresent(popedItem.loaderRef)) {
+            popedItem.loaderRef.destroy();
         }
     }
 
@@ -114,57 +146,69 @@ export class PageRouterOutlet extends RouterOutlet {
      * Called by the Router to instantiate a new component during the commit phase of a navigation.
      * This method in turn is responsible for calling the `routerOnActivate` hook of its child.
      */
-    activate(
-        factory: ComponentFactory<any>,
-        activatedRoute: ActivatedRoute,
-        providers: ResolvedReflectiveProvider[],
-        outletMap: RouterOutletMap): void {
-
+     activate(
+         activatedRoute: ActivatedRoute, loadedResolver: ComponentFactoryResolver,
+         loadedInjector: Injector, providers: ResolvedReflectiveProvider[],
+         outletMap: RouterOutletMap): void {
         this.outletMap = outletMap;
         this.currentActivatedRoute = activatedRoute;
 
-        if (this.locationStrategy.isPageNavigatingBack()) {
-            this.activateOnGoBack(factory, activatedRoute, providers);
+        if (this.locationStrategy._isPageNavigatingBack()) {
+            this.activateOnGoBack(activatedRoute, providers, outletMap);
         } else {
-            this.activateOnGoForward(factory, activatedRoute, providers);
+            this.activateOnGoForward(activatedRoute, providers, outletMap);
         }
     }
 
     private activateOnGoForward(
-        factory: ComponentFactory<any>,
         activatedRoute: ActivatedRoute,
-        providers: ResolvedReflectiveProvider[]): void {
+        providers: ResolvedReflectiveProvider[],
+        outletMap: RouterOutletMap): void {
+        const factory = this.getComponentFactory(activatedRoute);
+
+        const pageRoute = new PageRoute(activatedRoute);
+        providers = [...providers, ...ReflectiveInjector.resolve([{ provide: PageRoute, useValue: pageRoute }])];
 
         if (this.isInitalPage) {
-            log("PageRouterOutlet.activate() inital page - just load component: " + activatedRoute.component);
+            log("PageRouterOutlet.activate() inital page - just load component");
             this.isInitalPage = false;
             const inj = ReflectiveInjector.fromResolvedProviders(providers, this.containerRef.parentInjector);
-            this.currnetActivatedComp = this.containerRef.createComponent(factory, this.containerRef.length, inj, []);
-            this.refCache.push(this.currnetActivatedComp, null);
+            this.currentActivatedComp = this.containerRef.createComponent(factory, this.containerRef.length, inj, []);
+            this.refCache.push(this.currentActivatedComp, pageRoute, outletMap, null);
 
         } else {
-            log("PageRouterOutlet.activate() forward navigation - create detached loader in the loader container: " + activatedRoute.component);
+            log("PageRouterOutlet.activate() forward navigation - create detached loader in the loader container");
 
             const page = new Page();
-            const pageResolvedProvider = ReflectiveInjector.resolve([provide(Page, { useValue: page })])
+            const pageResolvedProvider = ReflectiveInjector.resolve([provide(Page, { useValue: page })]);
             const childInjector = ReflectiveInjector.fromResolvedProviders([...providers, ...pageResolvedProvider], this.containerRef.parentInjector);
             const loaderRef = this.containerRef.createComponent(this.detachedLoaderFactory, this.containerRef.length, childInjector, []);
 
-            this.currnetActivatedComp = loaderRef.instance.loadWithFactory(factory);
-            this.loadComponentInPage(page, this.currnetActivatedComp);
-            this.refCache.push(this.currnetActivatedComp, loaderRef);
+            this.currentActivatedComp = loaderRef.instance.loadWithFactory(factory);
+            this.loadComponentInPage(page, this.currentActivatedComp);
+            this.refCache.push(this.currentActivatedComp, pageRoute, outletMap, loaderRef);
         }
     }
 
-    private activateOnGoBack(factory: ComponentFactory<any>,
+    private activateOnGoBack(
         activatedRoute: ActivatedRoute,
-        providers: ResolvedReflectiveProvider[]): void {
-        log("PageRouterOutlet.activate() - Back naviation, so load from cache: " + activatedRoute.component);
+        providers: ResolvedReflectiveProvider[],
+        outletMap: RouterOutletMap): void {
+        log("PageRouterOutlet.activate() - Back naviation, so load from cache");
 
-        this.locationStrategy.finishBackPageNavigation();
+        this.locationStrategy._finishBackPageNavigation();
 
         let cacheItem = this.refCache.peek();
-        this.currnetActivatedComp = cacheItem.componentRef;
+        cacheItem.reusedRoute.activatedRoute.next(activatedRoute);
+
+        this.outletMap = cacheItem.outletMap;
+
+        // HACK: Fill the outlet map provided by the router, with the outlets that we have cached.
+        // This is needed beacuse the component is taken form the cache and not created - so it will not register
+        // its child router-outlets to the newly created outlet map.
+        (<any>Object).assign(outletMap, cacheItem.outletMap);
+
+        this.currentActivatedComp = cacheItem.componentRef;
     }
 
     private loadComponentInPage(page: Page, componentRef: ComponentRef<any>): void {
@@ -175,25 +219,57 @@ export class PageRouterOutlet extends RouterOutlet {
         //Add it to the new page
         page.content = componentView;
 
-        this.locationStrategy.navigateToNewPage();
-
         page.on('navigatedFrom', (<any>global).Zone.current.wrap((args: NavigatedData) => {
+            // console.log("page.navigatedFrom: " + page + " args.isBackNavigation:" + args.isBackNavigation);
+
             if (args.isBackNavigation) {
-                this.locationStrategy.beginBackPageNavigation();
+                this.locationStrategy._beginBackPageNavigation();
                 this.locationStrategy.back();
             }
         }));
 
-        topmost().navigate({
-            animated: true,
-            create: () => { return page; }
+        const navOptions = this.locationStrategy._beginPageNavigation();
+        this.frame.navigate({
+            create: () => { return page; },
+            clearHistory: navOptions.clearHistory,
+            animated: navOptions.animated,
+            transition: navOptions.transition
         });
+
+        // Clear refCache if navigation with clearHistory
+        if (navOptions.clearHistory) {
+            this.clearRefCache();
+        }
     }
+
+    // NOTE: Using private APIs - potential break point!
+    private getComponentFactory(activatedRoute: any): ComponentFactory<any> {
+        const snapshot = activatedRoute._futureSnapshot;
+        const component = <any>snapshot._routeConfig.component;
+        let factory: ComponentFactory<any>;
+        try {
+            factory = typeof component === 'string' ?
+                snapshot._resolvedComponentFactory :
+                this.componentFactoryResolver.resolveComponentFactory(component);
+        } catch (e) {
+            if (!(e instanceof NoComponentFactoryError)) {
+                throw e;
+            }
+            // TODO: vsavkin uncomment this once ComponentResolver is deprecated
+            // const componentName = component ? component.name : null;
+            // console.warn(
+            //     `'${componentName}' not found in precompile array.  To ensure all components referred
+            //     to by the RouterConfig are compiled, you must add '${componentName}' to the
+            //     'precompile' array of your application component. This will be required in a future
+            //     release of the router.`);
+
+            factory = snapshot._resolvedComponentFactory;
+        }
+        return factory;
+    }
+
 }
 
 function log(msg: string) {
     routerLog(msg);
 }
-
-
-

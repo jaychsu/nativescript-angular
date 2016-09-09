@@ -22,6 +22,10 @@
     horizontal-align: center;
 }
 
+.active {
+    color: orangered;
+}
+
 .router-link-active {
     background-color: lightcoral;
 }
@@ -47,4 +51,19 @@ button {
 
 .detail button {
     horizontal-align: center;
+}
+
+.odd { 
+    background-color: white; 
+    margin: 2;
+}
+
+.even { 
+    background-color: whitesmoke; 
+    margin: 2; 
+}
+
+.stretch {
+    horizontal-align: stretch;
+    margin: 0 10;
 }
